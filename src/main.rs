@@ -14,6 +14,14 @@ enum FieldStatus {
     CROSS,
 }
 
+#[derive(Debug, PartialEq)]
+enum GameResult {
+    EMPTY,
+    NOUGHT,
+    CROSS,
+    DRAW,
+}
+
 struct Game {
     field: [[FieldStatus; 3]; 3], /* game field */
     row: usize,
@@ -64,17 +72,28 @@ fn draw_box(tty: &mut File, shape: (u16, u16, u16, u16)) -> io::Result<()> {
     Ok(())
 }
 
-/* FIXME: Implement NOUGHT and CROSS cases */
-fn draw_char(tty: &mut File, x: u16, y: u16) -> io::Result<()> {
+fn draw_char(tty: &mut File, x: u16, y: u16, cases: char) -> io::Result<()> {
+    let bits: [u32; 2] = if cases == 'o' {
+        [3284386620, 1019462595]
+    } else if cases == 'x' {
+        [1013367747, 3284362812]
+    } else {
+        [0xFFFF_FFFF; 2]
+    };
+
     let mut x = x;
     write!(tty, "{}", cursor::Goto(y, x))?;
-    for _ in 0..2 {
+    for i in 0..2 {
         for j in 0..32 {
             if j % 8 == 0 {
                 x += 1;
                 write!(tty, "{}", cursor::Goto(y, x))?;
             }
-            write!(tty, "\x1b(0a\x1b(B")?;
+            write!(
+                tty,
+                "\x1b(0{}\x1b(B",
+                if (bits[i] >> j) & 0x1 == 0 { " " } else { "a" }
+            )?;
         }
     }
     Ok(())
@@ -141,7 +160,6 @@ fn main_screen(tty: &mut File) -> io::Result<()> {
     Ok(())
 }
 
-/* FIXME: Implement NOUGHT and CROSS cases */
 fn update_field(tty: &mut File, game: &Game) -> io::Result<()> {
     /* draw the all field */
     for i in 0..3 {
@@ -152,17 +170,140 @@ fn update_field(tty: &mut File, game: &Game) -> io::Result<()> {
 
             if i == game.row && j == game.col {
                 write!(tty, "{}", color::Fg(color::LightCyan))?;
+                write!(tty, "{}", color::Bg(color::LightBlack))?;
             } else {
-                write!(tty, "{}", color::Fg(color::Black))?;
+                if game.field[i][j] == FieldStatus::EMPTY {
+                    write!(tty, "{}", color::Fg(color::Black))?;
+                    write!(tty, "{}", color::Bg(color::Black))?;
+                } else {
+                    write!(tty, "{}", color::Fg(color::LightCyan))?;
+                    write!(tty, "{}", color::Bg(color::Black))?;
+                }
             }
 
             /* draw the block */
             match game.field[i][j] {
-                FieldStatus::EMPTY => draw_char(tty, x, y)?,
-                FieldStatus::NOUGHT => {}
-                FieldStatus::CROSS => {}
+                FieldStatus::EMPTY => draw_char(tty, x, y, '*')?,
+                FieldStatus::NOUGHT => draw_char(tty, x, y, 'o')?,
+                FieldStatus::CROSS => draw_char(tty, x, y, 'x')?,
             }
         }
+    }
+    Ok(())
+}
+
+fn check_win(game: &mut Game) -> GameResult {
+    /*             case7               case8
+     *                 \   c4   c5  c6   /
+     *                  \  ||   ||  ||  /
+     *                   \ \/   \/  \/ /
+     *   case 1 ----->    | x | o | x |
+     *   case 2 ----->    | o | x | o |
+     *   case 3 ----->    | o | x | x |
+     */
+    for i in 0..3 {
+        /* cases 1 2 3 */
+        if game.field[i][0] == FieldStatus::NOUGHT
+            && game.field[i][1] == FieldStatus::NOUGHT
+            && game.field[i][2] == FieldStatus::NOUGHT
+        {
+            return GameResult::NOUGHT;
+        }
+        if game.field[i][0] == FieldStatus::CROSS
+            && game.field[i][1] == FieldStatus::CROSS
+            && game.field[i][2] == FieldStatus::CROSS
+        {
+            return GameResult::CROSS;
+        }
+
+        /* case 4 5 6 */
+        if game.field[0][i] == FieldStatus::NOUGHT
+            && game.field[1][i] == FieldStatus::NOUGHT
+            && game.field[2][i] == FieldStatus::NOUGHT
+        {
+            return GameResult::NOUGHT;
+        }
+        if game.field[0][i] == FieldStatus::CROSS
+            && game.field[1][i] == FieldStatus::CROSS
+            && game.field[2][i] == FieldStatus::CROSS
+        {
+            return GameResult::CROSS;
+        }
+    }
+
+    /* cases 7 8 */
+    if game.field[0][0] == FieldStatus::NOUGHT
+        && game.field[1][1] == FieldStatus::NOUGHT
+        && game.field[2][2] == FieldStatus::NOUGHT
+    {
+        return GameResult::NOUGHT;
+    }
+    if game.field[0][0] == FieldStatus::CROSS
+        && game.field[1][1] == FieldStatus::CROSS
+        && game.field[2][2] == FieldStatus::CROSS
+    {
+        return GameResult::CROSS;
+    }
+
+    if game.field[0][2] == FieldStatus::NOUGHT
+        && game.field[1][1] == FieldStatus::NOUGHT
+        && game.field[2][0] == FieldStatus::NOUGHT
+    {
+        return GameResult::NOUGHT;
+    }
+    if game.field[0][2] == FieldStatus::CROSS
+        && game.field[1][1] == FieldStatus::CROSS
+        && game.field[2][0] == FieldStatus::CROSS
+    {
+        return GameResult::CROSS;
+    }
+
+    /* draw */
+    if game.field[0][0] != FieldStatus::EMPTY
+        && game.field[0][1] != FieldStatus::EMPTY
+        && game.field[0][2] != FieldStatus::EMPTY
+        && game.field[1][0] != FieldStatus::EMPTY
+        && game.field[1][1] != FieldStatus::EMPTY
+        && game.field[1][2] != FieldStatus::EMPTY
+        && game.field[2][0] != FieldStatus::EMPTY
+        && game.field[2][1] != FieldStatus::EMPTY
+        && game.field[2][2] != FieldStatus::EMPTY
+    {
+        return GameResult::DRAW;
+    }
+
+    GameResult::EMPTY
+}
+
+fn human_move(game: &mut Game, status: FieldStatus) -> bool {
+    if game.field[game.row][game.col] == FieldStatus::EMPTY {
+        game.field[game.row][game.col] = status;
+        return true;
+    }
+    false
+}
+
+fn computer_move(game: &mut Game, status: FieldStatus) {
+    'row: for i in 0..3 {
+        for j in 0..3 {
+            if game.field[i][j] == FieldStatus::EMPTY {
+                game.field[i][j] = status;
+                break 'row;
+            }
+        }
+    }
+}
+
+fn game_over(tty: &mut File, result: GameResult) -> io::Result<()> {
+    write!(tty, "{}", color::Fg(color::LightCyan))?;
+    write!(tty, "{}", color::Bg(color::Black))?;
+    /* clear screen */
+    write!(tty, "\x1b[H\x1b[J")?;
+    write!(tty, "{}", cursor::Goto(17, 15))?;
+    match result {
+        GameResult::CROSS | GameResult::NOUGHT => write!(tty, "{:?} WIN!", result)?,
+        GameResult::DRAW => write!(tty, "{:?}!", result)?,
+        GameResult::EMPTY => {}
     }
     Ok(())
 }
@@ -191,8 +332,22 @@ fn main() -> io::Result<()> {
             Key::Right => game.col += if game.col < 2 { 1 } else { 0 },
             Key::Up => game.row -= if game.row != 0 { 1 } else { 0 },
             Key::Down => game.row += if game.row < 2 { 1 } else { 0 },
-            /* FIXME: Implement the move of human */
-            Key::Char('\n') => continue,
+            Key::Char('\n') => {
+                if human_move(&mut game, FieldStatus::NOUGHT) {
+                    let result = check_win(&mut game);
+                    if result != GameResult::EMPTY {
+                        game_over(&mut tty, result)?;
+                        break;
+                    }
+
+                    computer_move(&mut game, FieldStatus::CROSS);
+                    let result = check_win(&mut game);
+                    if result != GameResult::EMPTY {
+                        game_over(&mut tty, result)?;
+                        break;
+                    }
+                }
+            }
             Key::Esc => break,
             _ => continue,
         }
