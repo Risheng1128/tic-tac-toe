@@ -15,7 +15,6 @@ fn main() -> io::Result<()> {
 
     /* play tic-tac-toe */
     tui.main_screen()?;
-    game.update_field(&mut tui)?;
     game.start(&mut tui)?;
 
     /* restore terminal */

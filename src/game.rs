@@ -36,6 +36,7 @@ impl Game {
     }
 
     pub fn start(&mut self, tui: &mut Tui) -> io::Result<()> {
+        self.update_field(tui)?;
         for key in stdin().keys() {
             match key.unwrap() {
                 Key::Left => self.col -= if self.col != 0 { 1 } else { 0 },
@@ -66,7 +67,7 @@ impl Game {
         Ok(())
     }
 
-    pub fn update_field(&self, tui: &mut Tui) -> io::Result<()> {
+    fn update_field(&self, tui: &mut Tui) -> io::Result<()> {
         /* draw the all field */
         for i in 0..3 {
             for j in 0..3 {
