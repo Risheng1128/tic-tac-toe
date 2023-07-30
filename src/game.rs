@@ -2,7 +2,15 @@ extern crate termion;
 
 use crate::tui::Tui;
 use std::io::{self, stdin};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
 use termion::{color, event::Key, input::TermRead};
+
+#[derive(PartialEq)]
+enum Player {
+    Computer,
+    Human,
+}
 
 #[derive(Copy, Clone, PartialEq)]
 enum FieldStatus {
@@ -19,23 +27,29 @@ enum GameResult {
     DRAW,
 }
 
-pub struct Game {
+struct GameInfo {
     field: [[FieldStatus; 3]; 3], /* game field */
     row: usize,
     col: usize,
+    player: Player,
+    winner: GameResult,
+    force_over: bool,
 }
 
-impl Game {
-    pub fn new() -> Game {
-        let game = Game {
+impl GameInfo {
+    fn new() -> GameInfo {
+        GameInfo {
             field: [[FieldStatus::EMPTY; 3]; 3],
             row: 0,
             col: 0,
-        };
-        game
+            player: Player::Human,
+            winner: GameResult::EMPTY,
+            force_over: false,
+        }
     }
 
-    pub fn start(&mut self, tui: &mut Tui) -> io::Result<()> {
+    /* operate key from keyboard */
+    fn operate_key(&mut self, tui: &mut Tui) -> io::Result<()> {
         self.update_field(tui)?;
         for key in stdin().keys() {
             match key.unwrap() {
@@ -45,21 +59,13 @@ impl Game {
                 Key::Down => self.row += if self.row < 2 { 1 } else { 0 },
                 Key::Char('\n') => {
                     if self.human_move(FieldStatus::NOUGHT) {
-                        let result = self.check_win();
-                        if result != GameResult::EMPTY {
-                            self.game_over(tui, result)?;
-                            break;
-                        }
-
-                        self.computer_move(FieldStatus::CROSS);
-                        let result = self.check_win();
-                        if result != GameResult::EMPTY {
-                            self.game_over(tui, result)?;
-                            break;
-                        }
+                        break;
                     }
                 }
-                Key::Esc => break,
+                Key::Esc => {
+                    self.force_over = true;
+                    break;
+                }
                 _ => continue,
             }
             self.update_field(tui)?;
@@ -117,7 +123,7 @@ impl Game {
         }
     }
 
-    fn check_win(&self) -> GameResult {
+    fn check_win(&mut self) -> bool {
         /*             case7               case8
          *                 \   c4   c5  c6   /
          *                  \  ||   ||  ||  /
@@ -132,13 +138,15 @@ impl Game {
                 && self.field[i][1] == FieldStatus::NOUGHT
                 && self.field[i][2] == FieldStatus::NOUGHT
             {
-                return GameResult::NOUGHT;
+                self.winner = GameResult::NOUGHT;
+                return true;
             }
             if self.field[i][0] == FieldStatus::CROSS
                 && self.field[i][1] == FieldStatus::CROSS
                 && self.field[i][2] == FieldStatus::CROSS
             {
-                return GameResult::CROSS;
+                self.winner = GameResult::CROSS;
+                return true;
             }
 
             /* case 4 5 6 */
@@ -146,13 +154,15 @@ impl Game {
                 && self.field[1][i] == FieldStatus::NOUGHT
                 && self.field[2][i] == FieldStatus::NOUGHT
             {
-                return GameResult::NOUGHT;
+                self.winner = GameResult::NOUGHT;
+                return true;
             }
             if self.field[0][i] == FieldStatus::CROSS
                 && self.field[1][i] == FieldStatus::CROSS
                 && self.field[2][i] == FieldStatus::CROSS
             {
-                return GameResult::CROSS;
+                self.winner = GameResult::CROSS;
+                return true;
             }
         }
 
@@ -161,26 +171,30 @@ impl Game {
             && self.field[1][1] == FieldStatus::NOUGHT
             && self.field[2][2] == FieldStatus::NOUGHT
         {
-            return GameResult::NOUGHT;
+            self.winner = GameResult::NOUGHT;
+            return true;
         }
         if self.field[0][0] == FieldStatus::CROSS
             && self.field[1][1] == FieldStatus::CROSS
             && self.field[2][2] == FieldStatus::CROSS
         {
-            return GameResult::CROSS;
+            self.winner = GameResult::CROSS;
+            return true;
         }
 
         if self.field[0][2] == FieldStatus::NOUGHT
             && self.field[1][1] == FieldStatus::NOUGHT
             && self.field[2][0] == FieldStatus::NOUGHT
         {
-            return GameResult::NOUGHT;
+            self.winner = GameResult::NOUGHT;
+            return true;
         }
         if self.field[0][2] == FieldStatus::CROSS
             && self.field[1][1] == FieldStatus::CROSS
             && self.field[2][0] == FieldStatus::CROSS
         {
-            return GameResult::CROSS;
+            self.winner = GameResult::CROSS;
+            return true;
         }
 
         /* draw */
@@ -194,23 +208,83 @@ impl Game {
             && self.field[2][1] != FieldStatus::EMPTY
             && self.field[2][2] != FieldStatus::EMPTY
         {
-            return GameResult::DRAW;
+            self.winner = GameResult::DRAW;
+            return true;
         }
 
-        GameResult::EMPTY
+        false
     }
 
-    fn game_over(&self, tui: &mut Tui, result: GameResult) -> io::Result<()> {
+    fn game_over(&self, tui: &mut Tui) -> io::Result<()> {
         tui.fg_set(&color::LightCyan)?;
         tui.bg_set(&color::Black)?;
         tui.cover_screen()?;
         tui.cursor_goto(15, 17)?;
 
-        match result {
+        match self.winner {
             GameResult::NOUGHT => tui.print_msg("Nought Win!"),
             GameResult::CROSS => tui.print_msg("Cross Win!"),
             GameResult::DRAW => tui.print_msg("Draw!"),
             GameResult::EMPTY => Ok(()),
         }
+    }
+}
+
+pub struct Game {
+    gameinfo: Arc<(Mutex<GameInfo>, Condvar)>,
+}
+
+impl Game {
+    pub fn new() -> Game {
+        Game {
+            gameinfo: Arc::new((Mutex::new(GameInfo::new()), Condvar::new())),
+        }
+    }
+
+    pub fn start(&mut self, tui: &mut Tui) -> io::Result<()> {
+        /* create computer thread */
+        let shared = self.gameinfo.clone();
+        thread::spawn(move || {
+            let (guard, condvar) = &*shared;
+
+            loop {
+                let mut guard = guard.lock().unwrap();
+
+                /* wait for human move */
+                while guard.player == Player::Human {
+                    guard = condvar.wait(guard).unwrap();
+                }
+
+                guard.computer_move(FieldStatus::CROSS);
+                guard.player = Player::Human;
+                condvar.notify_one();
+            }
+        });
+
+        let (guard, condvar) = &*self.gameinfo;
+        let mut guard = guard.lock().unwrap();
+        loop {
+            /* wait for computer move */
+            while guard.player == Player::Computer {
+                guard = condvar.wait(guard).unwrap();
+            }
+
+            /* 1. check the result from computer thread
+             * 2. operate key from keyboard
+             * 3. force over the game
+             * 4. check the result from human thread
+             */
+            if guard.check_win()
+                || guard.operate_key(tui).is_err()
+                || guard.force_over
+                || guard.check_win()
+            {
+                break;
+            }
+
+            guard.player = Player::Computer;
+            condvar.notify_one();
+        }
+        guard.game_over(tui)
     }
 }
